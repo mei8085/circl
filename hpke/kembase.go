@@ -11,6 +11,7 @@ import (
 )
 
 type dhKEM interface {
+	CiphertextSize() int
 	sizeDH() int
 	calcDH(dh []byte, sk kem.PrivateKey, pk kem.PublicKey) error
 	SeedSize() int
@@ -221,6 +222,10 @@ func (k dhKemBase) coreDecap(
 	skR kem.PrivateKey,
 	ct []byte,
 ) ([]byte, error) {
+	if len(ct) != k.CiphertextSize() {
+		return nil, kem.ErrCiphertextSize
+	}
+
 	pkE, err := k.UnmarshalBinaryPublicKey(ct)
 	if err != nil {
 		return nil, err

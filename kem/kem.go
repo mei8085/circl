@@ -41,8 +41,16 @@ type Scheme interface {
 	// encapsulates it into a ciphertext ct.
 	Encapsulate(pk PublicKey) (ct, ss []byte, err error)
 
-	// Returns the shared key encapsulated in ciphertext ct for the
-	// private key sk.
+	// Decapsulate returns the shared key encapsulated in ciphertext ct for
+	// the private key sk.
+	//
+	// A non-nil error means that no shared key was established; the returned
+	// slice is then nil and callers must not use it as a negotiated secret.
+	// Some schemes use implicit rejection: a ciphertext of the expected
+	// length that is malformed or fails re-encryption checks produces a
+	// deterministic, pseudorandom shared key and a nil error rather than a
+	// validity error. This preserves that scheme's shared-secret contract and
+	// avoids exposing whether the ciphertext was valid.
 	Decapsulate(sk PrivateKey, ct []byte) ([]byte, error)
 
 	// Unmarshals a PublicKey from the provided buffer.
