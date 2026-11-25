@@ -51,6 +51,19 @@ func (c *encdecContext) calcNonce() []byte {
 	return c.nonce
 }
 
+// isExhausted reports whether the sequence number has reached its maximum
+// value, the all-ones byte string. Per Section 5.2 of RFC 9180, a context in
+// this state must not be used to seal or open any further message, as doing so
+// would reuse an AEAD nonce.
+func (c *encdecContext) isExhausted() bool {
+	for i := range c.sequenceNumber {
+		if c.sequenceNumber[i] != 0xFF {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *encdecContext) increment() error {
 	// tests whether the sequence number is all-ones, which prevents an
 	// overflow after the increment.
@@ -76,6 +89,12 @@ func (c *encdecContext) increment() error {
 }
 
 func (c *sealContext) Seal(pt, aad []byte) ([]byte, error) {
+	// Per Section 5.2 of RFC 9180, fail before producing any ciphertext once
+	// the sequence number can no longer be incremented without overflowing, so
+	// that no nonce is ever reused. An exhausted context stays exhausted.
+	if c.isExhausted() {
+		return nil, ErrAEADSeqOverflows
+	}
 	ct := c.AEAD.Seal(nil, c.calcNonce(), pt, aad)
 	err := c.increment()
 	if err != nil {
@@ -88,6 +107,12 @@ func (c *sealContext) Seal(pt, aad []byte) ([]byte, error) {
 }
 
 func (c *openContext) Open(ct, aad []byte) ([]byte, error) {
+	// Per Section 5.2 of RFC 9180, fail before consuming any ciphertext once
+	// the sequence number can no longer be incremented without overflowing, so
+	// that no nonce is ever reused. An exhausted context stays exhausted.
+	if c.isExhausted() {
+		return nil, ErrAEADSeqOverflows
+	}
 	pt, err := c.AEAD.Open(nil, c.calcNonce(), ct, aad)
 	if err != nil {
 		return nil, err
