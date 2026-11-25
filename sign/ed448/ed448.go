@@ -133,30 +133,102 @@ func (pub PublicKey) MarshalBinary() (data []byte, err error) {
 // namely Ed448 (or pure EdDSA) and Ed448Ph.
 // The opts.HashFunc() must return zero to the specify Ed448 variant. This can
 // be achieved by passing crypto.Hash(0) as the value for opts.
-// Use an Options struct to pass a bool indicating that the ed448Ph variant
-// should be used.
-// The struct can also be optionally used to pass a context string for signing.
+// Use SignerOptions to select Ed448Ph and pass a context string.
+// SignerOptions may be passed by value or by pointer; nil selects Ed448 with
+// an empty context. Message and context semantics match Sign and SignPh.
 func (priv PrivateKey) Sign(
 	rand io.Reader,
 	message []byte,
 	opts crypto.SignerOpts,
 ) (signature []byte, err error) {
-	var ctx string
-	var scheme SchemeID
-
-	if o, ok := opts.(SignerOptions); ok {
-		ctx = o.Context
-		scheme = o.Scheme
+	cfg, err := signerConfigFromOpts(opts)
+	if err != nil {
+		return nil, err
 	}
 
-	switch true {
-	case scheme == ED448 && opts.HashFunc() == crypto.Hash(0):
-		return Sign(priv, message, ctx), nil
-	case scheme == ED448Ph && opts.HashFunc() == crypto.Hash(0):
-		return SignPh(priv, message, ctx), nil
+	switch cfg.scheme {
+	case ED448:
+		return Sign(priv, message, cfg.context), nil
+	case ED448Ph:
+		return SignPh(priv, message, cfg.context), nil
 	default:
-		return nil, errors.New("ed448: bad hash algorithm")
+		return nil, errBadHashAlgorithm
 	}
+}
+
+// SignMessage signs an unhashed protocol message. Ed448ph hashes the message
+// internally as required by RFC 8032. It implements crypto.MessageSigner.
+func (priv PrivateKey) SignMessage(
+	rand io.Reader,
+	message []byte,
+	opts crypto.SignerOpts,
+) ([]byte, error) {
+	return priv.Sign(rand, message, opts)
+}
+
+var errBadHashAlgorithm = errors.New("ed448: bad hash algorithm")
+
+// signerConfig is the resolved RFC 8032 variant and domain-separation
+// context used by the generic crypto.Signer and verification entry points.
+type signerConfig struct {
+	scheme  SchemeID
+	context string
+}
+
+// signerConfigFromOpts accepts both values and pointers of SignerOptions, as
+// well as the generic sign.SignatureOpts representation. This keeps the
+// generic entry points aligned with Sign, SignPh, and VerifyAny.
+func signerConfigFromOpts(opts crypto.SignerOpts) (signerConfig, error) {
+	cfg := signerConfig{scheme: ED448}
+	var hash crypto.Hash
+
+	switch o := opts.(type) {
+	case nil:
+		return cfg, nil
+	case SignerOptions:
+		cfg.scheme = o.Scheme
+		cfg.context = o.Context
+		hash = o.Hash
+	case *SignerOptions:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.scheme = o.Scheme
+		cfg.context = o.Context
+		hash = o.Hash
+	case sign.SignatureOpts:
+		cfg.context = o.Context
+		hash = o.Hash
+	case *sign.SignatureOpts:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.context = o.Context
+		hash = o.Hash
+	case sign.TestingSignerOpts:
+		cfg.context = o.Context
+		hash = o.Hash
+	case *sign.TestingSignerOpts:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.context = o.Context
+		hash = o.Hash
+	default:
+		hash = opts.HashFunc()
+	}
+
+	if hash != crypto.Hash(0) {
+		return signerConfig{}, errBadHashAlgorithm
+	}
+	if len(cfg.context) > ContextMaxSize {
+		return signerConfig{}, fmt.Errorf("ed448: bad context length: %v", len(cfg.context))
+	}
+	if cfg.scheme != ED448 && cfg.scheme != ED448Ph {
+		return signerConfig{}, errBadHashAlgorithm
+	}
+
+	return cfg, nil
 }
 
 // GenerateKey generates a public/private key pair using entropy from rand.
@@ -348,18 +420,16 @@ func verify(public PublicKey, message, signature, ctx []byte, preHash bool) bool
 //
 // Uses the default RFC 8032 cofactor-clearing verification.
 func VerifyAny(public PublicKey, message, signature []byte, opts crypto.SignerOpts) bool {
-	var ctx string
-	var scheme SchemeID
-	if o, ok := opts.(SignerOptions); ok {
-		ctx = o.Context
-		scheme = o.Scheme
+	cfg, err := signerConfigFromOpts(opts)
+	if err != nil {
+		return false
 	}
 
-	switch true {
-	case scheme == ED448 && opts.HashFunc() == crypto.Hash(0):
-		return Verify(public, message, signature, ctx)
-	case scheme == ED448Ph && opts.HashFunc() == crypto.Hash(0):
-		return VerifyPh(public, message, signature, ctx)
+	switch cfg.scheme {
+	case ED448:
+		return Verify(public, message, signature, cfg.context)
+	case ED448Ph:
+		return VerifyPh(public, message, signature, cfg.context)
 	default:
 		return false
 	}

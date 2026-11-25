@@ -20,7 +20,7 @@ func (*scheme) PrivateKeySize() int   { return PrivateKeySize }
 func (*scheme) SignatureSize() int    { return SignatureSize }
 func (*scheme) SeedSize() int         { return SeedSize }
 func (*scheme) TLSIdentifier() uint   { return 0x0807 }
-func (*scheme) SupportsContext() bool { return false }
+func (*scheme) SupportsContext() bool { return true }
 func (*scheme) Oid() asn1.ObjectIdentifier {
 	return asn1.ObjectIdentifier{1, 3, 101, 112}
 }
@@ -38,10 +38,11 @@ func (*scheme) Sign(
 	if !ok {
 		panic(sign.ErrTypeMismatch)
 	}
-	if opts != nil && opts.Context != "" {
-		panic(sign.ErrContextNotSupported)
+	sig, err := priv.Sign(nil, message, opts)
+	if err != nil {
+		panic(err)
 	}
-	return Sign(priv, message)
+	return sig
 }
 
 func (*scheme) Verify(
@@ -53,12 +54,7 @@ func (*scheme) Verify(
 	if !ok {
 		panic(sign.ErrTypeMismatch)
 	}
-	if opts != nil {
-		if opts.Context != "" {
-			panic(sign.ErrContextNotSupported)
-		}
-	}
-	return Verify(pub, message, signature)
+	return VerifyAny(pub, message, signature, opts)
 }
 
 func (*scheme) DeriveKey(seed []byte) (sign.PublicKey, sign.PrivateKey) {

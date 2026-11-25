@@ -38,11 +38,11 @@ func (*scheme) Sign(
 	if !ok {
 		panic(sign.ErrTypeMismatch)
 	}
-	ctx := ""
-	if opts != nil {
-		ctx = opts.Context
+	sig, err := priv.Sign(nil, message, opts)
+	if err != nil {
+		panic(err)
 	}
-	return Sign(priv, message, ctx)
+	return sig
 }
 
 func (*scheme) Verify(
@@ -54,11 +54,7 @@ func (*scheme) Verify(
 	if !ok {
 		panic(sign.ErrTypeMismatch)
 	}
-	ctx := ""
-	if opts != nil {
-		ctx = opts.Context
-	}
-	return Verify(pub, message, signature, ctx)
+	return VerifyAny(pub, message, signature, opts)
 }
 
 func (*scheme) DeriveKey(seed []byte) (sign.PublicKey, sign.PrivateKey) {

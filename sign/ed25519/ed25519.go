@@ -45,6 +45,7 @@ package ed25519
 import (
 	"bytes"
 	"crypto"
+	cryptoEd25519 "crypto/ed25519"
 	cryptoRand "crypto/rand"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -155,29 +156,143 @@ func (pub PublicKey) Equal(x crypto.PublicKey) bool {
 // The opts.HashFunc() must return SHA512 to specify the Ed25519Ph variant.
 // This can be achieved by passing crypto.SHA512 as the value for opts.
 // Use a SignerOptions struct (defined in this package) to pass a context
-// string for signing.
+// string for signing. SignerOptions may be passed by value or by pointer;
+// nil selects plain Ed25519. Message and context semantics are the same as
+// for Sign, SignPh, and SignWithCtx.
 func (priv PrivateKey) Sign(
 	rand io.Reader,
 	message []byte,
 	opts crypto.SignerOpts,
 ) (signature []byte, err error) {
-	var ctx string
-	var scheme SchemeID
-	if o, ok := opts.(SignerOptions); ok {
-		ctx = o.Context
-		scheme = o.Scheme
+	cfg, err := signerConfigFromOpts(opts)
+	if err != nil {
+		return nil, err
 	}
 
-	switch true {
-	case scheme == ED25519 && opts.HashFunc() == crypto.Hash(0):
+	switch cfg.scheme {
+	case ED25519:
 		return Sign(priv, message), nil
-	case scheme == ED25519Ph && opts.HashFunc() == crypto.SHA512:
-		return SignPh(priv, message, ctx), nil
-	case scheme == ED25519Ctx && opts.HashFunc() == crypto.Hash(0) && len(ctx) > 0:
-		return SignWithCtx(priv, message, ctx), nil
+	case ED25519Ph:
+		return SignPh(priv, message, cfg.context), nil
+	case ED25519Ctx:
+		return SignWithCtx(priv, message, cfg.context), nil
 	default:
-		return nil, errors.New("ed25519: bad hash algorithm")
+		return nil, errBadHashAlgorithm
 	}
+}
+
+// SignMessage has the same message semantics as Sign in this package: the
+// message passed for Ed25519ph is hashed internally. It implements
+// crypto.MessageSigner for callers that select the raw-message interface.
+func (priv PrivateKey) SignMessage(
+	rand io.Reader,
+	message []byte,
+	opts crypto.SignerOpts,
+) ([]byte, error) {
+	return priv.Sign(rand, message, opts)
+}
+
+var errBadHashAlgorithm = errors.New("ed25519: bad hash algorithm")
+
+// signerConfig is the resolved RFC 8032 variant and domain-separation
+// context used by the generic crypto.Signer and verification entry points.
+type signerConfig struct {
+	scheme  SchemeID
+	context string
+}
+
+// signerConfigFromOpts maps every supported options representation to the
+// same variant and context used by the direct Sign, SignPh, and SignWithCtx
+// functions. In particular, both values and pointers are recognized.
+func signerConfigFromOpts(opts crypto.SignerOpts) (signerConfig, error) {
+	cfg := signerConfig{scheme: ED25519}
+	var hash crypto.Hash
+	explicitScheme := false
+
+	switch o := opts.(type) {
+	case nil:
+		return cfg, nil
+	case SignerOptions:
+		cfg.scheme = o.Scheme
+		cfg.context = o.Context
+		hash = o.Hash
+		explicitScheme = true
+	case *SignerOptions:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.scheme = o.Scheme
+		cfg.context = o.Context
+		hash = o.Hash
+		explicitScheme = true
+	case sign.SignatureOpts:
+		cfg.context = o.Context
+		hash = o.Hash
+	case *sign.SignatureOpts:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.context = o.Context
+		hash = o.Hash
+	case sign.TestingSignerOpts:
+		cfg.context = o.Context
+		hash = o.Hash
+	case *sign.TestingSignerOpts:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.context = o.Context
+		hash = o.Hash
+	case *cryptoEd25519.Options:
+		if o == nil {
+			return cfg, nil
+		}
+		cfg.context = o.Context
+		hash = o.Hash
+	default:
+		hash = opts.HashFunc()
+	}
+
+	if len(cfg.context) > ContextMaxSize {
+		return signerConfig{}, fmt.Errorf("ed25519: bad context length: %v > %v",
+			len(cfg.context), ContextMaxSize)
+	}
+
+	// The zero SchemeID is ED25519, so options that do not expose a Scheme
+	// select the variant from the hash and context as in crypto/ed25519.
+	// Apply the same inference to a zero-valued SignerOptions so that its
+	// Context field is never silently ignored.
+	if !explicitScheme || cfg.scheme == ED25519 {
+		switch {
+		case hash == crypto.SHA512:
+			cfg.scheme = ED25519Ph
+		case hash == crypto.Hash(0) && cfg.context != "":
+			cfg.scheme = ED25519Ctx
+		case hash == crypto.Hash(0):
+			cfg.scheme = ED25519
+		default:
+			return signerConfig{}, errBadHashAlgorithm
+		}
+	}
+
+	switch cfg.scheme {
+	case ED25519:
+		if hash != crypto.Hash(0) || cfg.context != "" {
+			return signerConfig{}, errBadHashAlgorithm
+		}
+	case ED25519Ph:
+		if hash != crypto.SHA512 {
+			return signerConfig{}, errBadHashAlgorithm
+		}
+	case ED25519Ctx:
+		if hash != crypto.Hash(0) || cfg.context == "" {
+			return signerConfig{}, errBadHashAlgorithm
+		}
+	default:
+		return signerConfig{}, errBadHashAlgorithm
+	}
+
+	return cfg, nil
 }
 
 // GenerateKey generates a public/private key pair using entropy from rand.
@@ -378,20 +493,18 @@ func verify(public PublicKey, message, signature, ctx []byte, preHash bool) bool
 // This can be achieved by passing crypto.SHA512 as the value for opts.
 // Use a SignerOptions struct to pass a context string for signing.
 func VerifyAny(public PublicKey, message, signature []byte, opts crypto.SignerOpts) bool {
-	var ctx string
-	var scheme SchemeID
-	if o, ok := opts.(SignerOptions); ok {
-		ctx = o.Context
-		scheme = o.Scheme
+	cfg, err := signerConfigFromOpts(opts)
+	if err != nil {
+		return false
 	}
 
-	switch true {
-	case scheme == ED25519 && opts.HashFunc() == crypto.Hash(0):
+	switch cfg.scheme {
+	case ED25519:
 		return Verify(public, message, signature)
-	case scheme == ED25519Ph && opts.HashFunc() == crypto.SHA512:
-		return VerifyPh(public, message, signature, ctx)
-	case scheme == ED25519Ctx && opts.HashFunc() == crypto.Hash(0) && len(ctx) > 0:
-		return VerifyWithCtx(public, message, signature, ctx)
+	case ED25519Ph:
+		return VerifyPh(public, message, signature, cfg.context)
+	case ED25519Ctx:
+		return VerifyWithCtx(public, message, signature, cfg.context)
 	default:
 		return false
 	}
